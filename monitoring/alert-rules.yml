@@ -1,0 +1,73 @@
+groups:
+  - name: vllm-latency
+    rules:
+      - alert: HighE2ELatency
+        expr: histogram_quantile(0.95, sum by(le, instance_id) (rate(vllm:e2e_request_latency_seconds_bucket[5m]))) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "vLLM p95 latency above 10s on {{ $labels.instance_id }}"
+          description: "p95 end-to-end latency is {{ $value }}s. Check if GPU memory is saturated or requests are queuing."
+
+      - alert: CriticalE2ELatency
+        expr: histogram_quantile(0.99, sum by(le, instance_id) (rate(vllm:e2e_request_latency_seconds_bucket[5m]))) > 30
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "vLLM p99 latency above 30s on {{ $labels.instance_id }}"
+
+      - alert: HighTimeToFirstToken
+        expr: histogram_quantile(0.95, sum by(le, instance_id) (rate(vllm:time_to_first_token_seconds_bucket[5m]))) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "TTFT p95 above 5s on {{ $labels.instance_id }}"
+
+  - name: vllm-capacity
+    rules:
+      - alert: RequestQueueBacklog
+        expr: vllm:num_requests_waiting > 20
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} requests waiting in queue on {{ $labels.instance_id }}"
+          description: "Consider scaling out - requests are piling up."
+
+      - alert: GPUCacheNearFull
+        expr: vllm:gpu_cache_usage_perc > 0.95
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPU KV cache {{ $value | humanizePercentage }} full on {{ $labels.instance_id }}"
+          description: "New requests may be rejected or queued. Consider reducing max-num-seqs or scaling out."
+
+      - alert: GPUCacheFull
+        expr: vllm:gpu_cache_usage_perc > 0.99
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "GPU KV cache exhausted on {{ $labels.instance_id }}"
+
+  - name: vllm-availability
+    rules:
+      - alert: InstanceDown
+        expr: up{job="vllm"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "vLLM instance {{ $labels.instance_id }} is down"
+
+      - alert: LowThroughput
+        expr: rate(vllm:generation_tokens_total[5m]) == 0 and up{job="vllm"} == 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Zero generation throughput on {{ $labels.instance_id }} while instance is up"

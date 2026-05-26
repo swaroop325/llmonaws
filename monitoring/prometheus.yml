@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+rule_files:
+  - alert-rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+scrape_configs:
+  - job_name: vllm
+    ec2_sd_configs:
+      - region: us-east-1
+        port: 8000
+        filters:
+          - name: tag:Name
+            values: ["vllm-inference"]
+          - name: instance-state-name
+            values: ["running"]
+    relabel_configs:
+      - source_labels: [__meta_ec2_instance_id]
+        target_label: instance_id
+      - source_labels: [__meta_ec2_availability_zone]
+        target_label: availability_zone
+      - source_labels: [__meta_ec2_private_ip]
+        target_label: __address__
+        replacement: "${1}:8000"
+
+  # Fallback: static targets for local/single-instance testing
+  # Uncomment below and comment out ec2_sd_configs above for local dev
+  # - job_name: vllm-local
+  #   static_configs:
+  #     - targets: ["host.docker.internal:8000"]

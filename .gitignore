@@ -1,0 +1,32 @@
+# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfplan
+terraform/terraform.tfvars
+terraform/.terraform.tfstate.lock.info
+
+# Environment secrets
+.env
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+model-cache/
+
+# Logs
+*.log
+
+# Perf test outputs
+report*.json
+perf-test_*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
