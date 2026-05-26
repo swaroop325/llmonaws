@@ -278,31 +278,33 @@ async def run_sustained_load(
 
 async def test_baseline(session, base_url, model):
     """Single-request latency with no contention."""
-    print("  Sending 5 sequential requests (no concurrency)...")
+    print("  Sending 3 sequential requests (no concurrency)...")
     results = []
-    for i in range(5):
+    for i in range(3):
         r = await send_request(session, base_url, model, i, max_tokens=100)
         results.append(r)
     return compute_benchmark("baseline", 1, results, sum(r.latency_ms for r in results) / 1000)
 
 
-async def test_throughput(session, base_url, model, duration):
-    """Sustained load to measure peak throughput."""
-    concurrency = 64
+async def test_throughput(session, base_url, model, duration, max_concurrency=200):
+    """Sustained load to measure peak throughput — uses high concurrency."""
+    concurrency = min(max_concurrency, 256)
     print(f"  Sustained load at concurrency={concurrency} for {duration}s...")
     results = await run_sustained_load(session, base_url, model, concurrency, duration)
     return compute_benchmark("throughput", concurrency, results, duration)
 
 
-async def test_concurrency_ramp(session, base_url, model, max_concurrency=200):
-    """Increase concurrency to find saturation and breaking point."""
-    levels = [1, 5, 10, 25, 50, 75, 100, 150, 200, 300, 400, 500]
+async def test_concurrency_ramp(session, base_url, model, max_concurrency=500):
+    """Increase concurrency aggressively to find breaking point.
+    Each level fires all requests concurrently (one batch) to minimize wall time.
+    """
+    levels = [25, 50, 100, 150, 200, 300, 400, 500, 750, 1000]
     levels = [l for l in levels if l <= max_concurrency]
     ramp_results = []
 
     for c in levels:
-        num_requests = max(c * 2, 10)
-        print(f"  Concurrency {c:>3} ({num_requests} requests)...", end="", flush=True)
+        num_requests = c  # fire exactly c requests all at once
+        print(f"  Concurrency {c:>4} ({num_requests} requests)...", end="", flush=True)
         start = time.perf_counter()
         results = await run_concurrent_batch(session, base_url, model, c, num_requests)
         duration = time.perf_counter() - start
@@ -314,29 +316,27 @@ async def test_concurrency_ramp(session, base_url, model, max_concurrency=200):
             f"  err={bench.error_rate:.1%}"
         )
         if bench.error_rate > 0.5:
-            print("  [STOPPING - error rate > 50%]")
+            print("  [STOPPED - error rate > 50% = BREAKING POINT]")
             break
         if bench.error_rate > 0.2:
-            print("  [WARNING - error rate > 20%, approaching limit]")
+            print("  [WARNING - error rate > 20%, near limit]")
 
     return ramp_results
 
 
-async def test_peak(session, base_url, model, max_concurrency=200):
-    """Find breaking point - aggressive concurrency."""
+async def test_peak(session, base_url, model, max_concurrency=500):
+    """Sustained peak - hold max concurrency for extended period."""
     concurrency = max_concurrency
-    num_requests = concurrency * 3
-    print(f"  Burst: {num_requests} requests at concurrency={concurrency}...")
-    start = time.perf_counter()
-    results = await run_concurrent_batch(session, base_url, model, concurrency, num_requests)
-    duration = time.perf_counter() - start
+    duration = 30
+    print(f"  Sustained peak: concurrency={concurrency} for {duration}s...")
+    results = await run_sustained_load(session, base_url, model, concurrency, duration)
     return compute_benchmark("peak", concurrency, results, duration)
 
 
 async def test_streaming(session, base_url, model):
-    """Measure TTFT under moderate load with streaming."""
-    concurrency = 25
-    num_requests = 50
+    """Measure TTFT under heavy load with streaming."""
+    concurrency = 100
+    num_requests = 100
     print(f"  Streaming: {num_requests} requests at concurrency={concurrency}...")
     start = time.perf_counter()
     results = await run_concurrent_batch(
@@ -512,7 +512,7 @@ async def main():
         # 2. Throughput
         if "throughput" not in args.skip:
             print("[2/5] THROUGHPUT TEST")
-            report.throughput = await test_throughput(session, base_url, model, args.duration)
+            report.throughput = await test_throughput(session, base_url, model, args.duration, args.max_concurrency)
             print(f"       → {report.throughput.tokens_per_second:.0f} tok/s, {report.throughput.requests_per_second:.1f} req/s\n")
 
         # 3. Concurrency ramp
