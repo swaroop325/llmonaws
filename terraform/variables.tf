@@ -1,22 +1,22 @@
 variable "aws_region" {
   description = "AWS region for deployment"
   type        = string
-  default     = "us-east-1"
+  default     = "ap-southeast-1"
 }
 
 variable "instance_type" {
-  description = "EC2 instance type - g5.12xlarge (4x A10G 96GB) for AWQ quantized 32B model with TP=4"
+  description = "EC2 instance type with NVIDIA GPUs"
   type        = string
-  default     = "g5.12xlarge"
-  # g5.12xlarge = 4x A10G (96GB) - recommended, TP=4 for max throughput
-  # g5.48xlarge = 8x A10G (192GB) - TP=8, double throughput per instance
-  # p4d.24xlarge = 8x A100 (320GB) - highest throughput, lowest latency
+  default     = "g4dn.12xlarge"
+  # g4dn.12xlarge = 4x T4 (64GB) - available in ap-southeast-1, TP=4
+  # g5.12xlarge   = 4x A10G (96GB) - us-east-1/us-west-2 only, faster with Marlin
+  # p4de.24xlarge = 8x A100 (640GB) - overkill for 32B AWQ
 }
 
 variable "ami_id" {
-  description = "AMI ID - use Amazon Deep Learning AMI or Ubuntu 22.04 with NVIDIA drivers"
+  description = "AMI ID - use Deep Learning OSS Nvidia Driver AMI (Ubuntu)"
   type        = string
-  default     = "ami-0123456789abcdef0"
+  default     = "ami-0552b83099ca8fed0"
 }
 
 variable "key_name" {
@@ -25,21 +25,21 @@ variable "key_name" {
 }
 
 variable "desired_capacity" {
-  description = "Desired number of instances (2-4 for 50-200 concurrent users)"
+  description = "Desired number of instances"
   type        = number
-  default     = 3
+  default     = 1
 }
 
 variable "min_instances" {
-  description = "Minimum number of instances - at least 2 for redundancy across AZs"
+  description = "Minimum number of instances"
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "max_instances" {
   description = "Maximum number of instances for scale-out"
   type        = number
-  default     = 8
+  default     = 1
 }
 
 variable "allowed_cidr_blocks" {

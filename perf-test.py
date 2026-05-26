@@ -294,9 +294,10 @@ async def test_throughput(session, base_url, model, duration):
     return compute_benchmark("throughput", concurrency, results, duration)
 
 
-async def test_concurrency_ramp(session, base_url, model):
-    """Increase concurrency to find saturation point."""
-    levels = [1, 5, 10, 25, 50, 75, 100, 150, 200]
+async def test_concurrency_ramp(session, base_url, model, max_concurrency=200):
+    """Increase concurrency to find saturation and breaking point."""
+    levels = [1, 5, 10, 25, 50, 75, 100, 150, 200, 300, 400, 500]
+    levels = [l for l in levels if l <= max_concurrency]
     ramp_results = []
 
     for c in levels:
@@ -315,14 +316,16 @@ async def test_concurrency_ramp(session, base_url, model):
         if bench.error_rate > 0.5:
             print("  [STOPPING - error rate > 50%]")
             break
+        if bench.error_rate > 0.2:
+            print("  [WARNING - error rate > 20%, approaching limit]")
 
     return ramp_results
 
 
-async def test_peak(session, base_url, model):
+async def test_peak(session, base_url, model, max_concurrency=200):
     """Find breaking point - aggressive concurrency."""
-    concurrency = 200
-    num_requests = 400
+    concurrency = max_concurrency
+    num_requests = concurrency * 3
     print(f"  Burst: {num_requests} requests at concurrency={concurrency}...")
     start = time.perf_counter()
     results = await run_concurrent_batch(session, base_url, model, concurrency, num_requests)
@@ -515,13 +518,13 @@ async def main():
         # 3. Concurrency ramp
         if "ramp" not in args.skip:
             print("[3/5] CONCURRENCY RAMP")
-            report.concurrency_ramp = await test_concurrency_ramp(session, base_url, model)
+            report.concurrency_ramp = await test_concurrency_ramp(session, base_url, model, args.max_concurrency)
             print("")
 
         # 4. Peak
         if "peak" not in args.skip:
             print("[4/5] PEAK LOAD TEST")
-            report.peak = await test_peak(session, base_url, model)
+            report.peak = await test_peak(session, base_url, model, args.max_concurrency)
             print(f"       → {report.peak.tokens_per_second:.0f} tok/s, {report.peak.error_rate:.1%} errors\n")
 
         # 5. Streaming TTFT

@@ -1,10 +1,10 @@
-aws_region       = "us-east-1"
-instance_type    = "g5.12xlarge"
-ami_id           = "ami-XXXXXXXXXXXXXXXXX" # Deep Learning AMI (Ubuntu 22.04)
-key_name         = "your-key-pair-name"
-desired_capacity = 3
-min_instances    = 2
-max_instances    = 8
+aws_region       = "ap-southeast-1"
+instance_type    = "g4dn.12xlarge"
+ami_id           = "ami-0552b83099ca8fed0" # Deep Learning OSS Nvidia Driver AMI GPU PyTorch (Ubuntu 24.04)
+key_name         = "vllm-deploy-ap-southeast-1"
+desired_capacity = 1
+min_instances    = 1
+max_instances    = 1
 
 # Restrict access to your IP/VPN in production
 allowed_cidr_blocks = ["0.0.0.0/0"]
@@ -17,4 +17,4 @@ monitoring_cidr_blocks = ["10.0.0.0/8"]
 enable_deletion_protection = false
 
 # Optional: SNS topic for critical alerts
-# sns_alert_arn = "arn:aws:sns:us-east-1:123456789:vllm-alerts"
+# sns_alert_arn = "arn:aws:sns:ap-southeast-1:123456789:vllm-alerts"

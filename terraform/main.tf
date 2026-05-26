@@ -77,12 +77,20 @@ resource "aws_security_group" "instance" {
     cidr_blocks = var.ssh_cidr_blocks
   }
 
-  # Allow Prometheus scraping from monitoring instance
+  # Grafana
   ingress {
-    from_port       = 8000
-    to_port         = 8000
-    protocol        = "tcp"
-    cidr_blocks     = var.monitoring_cidr_blocks
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_cidr_blocks
+  }
+
+  # Prometheus
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_cidr_blocks
   }
 
   egress {

@@ -12,14 +12,14 @@ services:
       - CUDA_VISIBLE_DEVICES=0,1,2,3
     command:
       - --model=Qwen/Qwen2.5-32B-Instruct-AWQ
-      - --quantization=awq
+      - --quantization=awq_marlin
       - --host=0.0.0.0
       - --port=8000
       - --tensor-parallel-size=4
-      - --gpu-memory-utilization=0.90
+      - --gpu-memory-utilization=0.92
       - --max-model-len=4096
-      - --max-num-seqs=256
-      - --max-num-batched-tokens=8192
+      - --max-num-seqs=512
+      - --max-num-batched-tokens=16384
       - --enable-prefix-caching
       - --served-model-name=qwen2.5-32b
     deploy:
