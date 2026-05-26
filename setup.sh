@@ -2,11 +2,12 @@
 set -euo pipefail
 
 # Setup script for vLLM AWS deployment
-# Usage: ./setup.sh [--region us-east-1] [--instance-type g5.12xlarge]
+# Deploys Qwen2.5-32B-Instruct-AWQ on g4dn.12xlarge (4x T4, ap-southeast-1)
+# Usage: ./setup.sh [--region ap-southeast-1] [--instance-type g4dn.12xlarge]
 
-REGION="${AWS_REGION:-us-east-1}"
-INSTANCE_TYPE="g5.12xlarge"
-DESIRED_CAPACITY=2
+REGION="${AWS_REGION:-ap-southeast-1}"
+INSTANCE_TYPE="g4dn.12xlarge"
+DESIRED_CAPACITY=1
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -44,26 +45,28 @@ fi
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 echo "AWS Account: $ACCOUNT_ID"
 
-# Find the Deep Learning AMI
+# Find the Deep Learning AMI (GPU PyTorch, Ubuntu)
 echo ""
 echo "Looking up Deep Learning AMI in $REGION..."
 AMI_ID=$(aws ec2 describe-images \
     --region "$REGION" \
     --owners amazon \
     --filters \
-        "Name=name,Values=Deep Learning AMI (Ubuntu 22.04)*" \
+        "Name=name,Values=Deep Learning OSS Nvidia Driver AMI GPU PyTorch*Ubuntu*" \
         "Name=state,Values=available" \
+        "Name=architecture,Values=x86_64" \
     --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
     --output text 2>/dev/null || echo "")
 
 if [[ -z "$AMI_ID" || "$AMI_ID" == "None" ]]; then
-    echo "WARNING: Could not find Deep Learning AMI. Using generic Ubuntu 22.04."
+    echo "WARNING: Could not find Deep Learning AMI. Trying broader search..."
     AMI_ID=$(aws ec2 describe-images \
         --region "$REGION" \
-        --owners 099720109477 \
+        --owners amazon \
         --filters \
-            "Name=name,Values=ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*" \
+            "Name=name,Values=*Deep Learning*Ubuntu*" \
             "Name=state,Values=available" \
+            "Name=architecture,Values=x86_64" \
         --query 'sort_by(Images, &CreationDate)[-1].ImageId' \
         --output text)
 fi
@@ -73,15 +76,15 @@ echo "AMI: $AMI_ID"
 KEY_NAME="vllm-deploy-${REGION}"
 echo ""
 echo "Checking EC2 key pair..."
-if ! aws ec2 describe-key-pairs --region "$REGION" --key-names "$KEY_NAME" &>/dev/null; then
+if ! aws ec2 describe-key-pairs --region "$REGION" --key-names "$KEY_NAME" &>/dev/null 2>&1; then
     echo "Creating key pair: $KEY_NAME"
     aws ec2 create-key-pair \
         --region "$REGION" \
         --key-name "$KEY_NAME" \
         --query 'KeyMaterial' \
-        --output text > "${KEY_NAME}.pem"
-    chmod 600 "${KEY_NAME}.pem"
-    echo "Key saved to ${KEY_NAME}.pem"
+        --output text > "${HOME}/.ssh/${KEY_NAME}.pem"
+    chmod 600 "${HOME}/.ssh/${KEY_NAME}.pem"
+    echo "Key saved to ~/.ssh/${KEY_NAME}.pem"
 else
     echo "Key pair '$KEY_NAME' already exists."
 fi
@@ -89,7 +92,7 @@ fi
 # Check GPU instance quota
 echo ""
 echo "Checking GPU instance quota..."
-VCPU_NEEDED=48  # g5.12xlarge = 48 vCPUs
+VCPU_NEEDED=48  # g4dn.12xlarge = 48 vCPUs
 QUOTA=$(aws service-quotas get-service-quota \
     --region "$REGION" \
     --service-code ec2 \
@@ -102,6 +105,30 @@ if (( $(echo "$QUOTA < $TOTAL_NEEDED" | bc -l) )); then
     echo "WARNING: Your quota ($QUOTA vCPUs) may be insufficient for $DESIRED_CAPACITY x $INSTANCE_TYPE ($TOTAL_NEEDED vCPUs)."
     echo "Request a quota increase at: https://console.aws.amazon.com/servicequotas/"
 fi
+
+# Ensure default VPC has subnets in at least 2 AZs (required for ALB)
+echo ""
+echo "Checking VPC subnets..."
+VPC_ID=$(aws ec2 describe-vpcs --region "$REGION" --filters "Name=isDefault,Values=true" --query 'Vpcs[0].VpcId' --output text)
+SUBNET_COUNT=$(aws ec2 describe-subnets --region "$REGION" --filters "Name=vpc-id,Values=$VPC_ID" --query 'length(Subnets)' --output text)
+if [[ "$SUBNET_COUNT" -lt 2 ]]; then
+    echo "ALB requires subnets in at least 2 AZs. Creating additional subnets..."
+    VPC_CIDR=$(aws ec2 describe-vpcs --region "$REGION" --vpc-ids "$VPC_ID" --query 'Vpcs[0].CidrBlock' --output text)
+    AZS=($(aws ec2 describe-availability-zones --region "$REGION" --query 'AvailabilityZones[*].ZoneName' --output text))
+    EXISTING_AZ=$(aws ec2 describe-subnets --region "$REGION" --filters "Name=vpc-id,Values=$VPC_ID" --query 'Subnets[0].AvailabilityZone' --output text)
+    CIDR_BASE=16
+    for AZ in "${AZS[@]}"; do
+        if [[ "$AZ" != "$EXISTING_AZ" && "$SUBNET_COUNT" -lt 2 ]]; then
+            CIDR="172.31.${CIDR_BASE}.0/20"
+            aws ec2 create-subnet --region "$REGION" --vpc-id "$VPC_ID" --cidr-block "$CIDR" --availability-zone "$AZ" --output text >/dev/null 2>&1 && {
+                echo "  Created subnet in $AZ ($CIDR)"
+                SUBNET_COUNT=$((SUBNET_COUNT + 1))
+            } || true
+            CIDR_BASE=$((CIDR_BASE + 16))
+        fi
+    done
+fi
+echo "VPC $VPC_ID has $SUBNET_COUNT subnets."
 
 # Check HuggingFace token
 echo ""
@@ -128,8 +155,8 @@ instance_type    = "$INSTANCE_TYPE"
 ami_id           = "$AMI_ID"
 key_name         = "$KEY_NAME"
 desired_capacity = $DESIRED_CAPACITY
-min_instances    = 2
-max_instances    = 8
+min_instances    = 1
+max_instances    = 1
 
 allowed_cidr_blocks = ["0.0.0.0/0"]
 ssh_cidr_blocks     = ["0.0.0.0/0"]
@@ -142,6 +169,11 @@ echo "Next steps:"
 echo "  1. Review terraform/terraform.tfvars (restrict CIDR blocks for production)"
 echo "  2. cd terraform && terraform init && terraform plan"
 echo "  3. terraform apply"
-echo "  4. SSH into instances and verify: ssh -i ${KEY_NAME}.pem ubuntu@<ip>"
+echo "  4. Wait ~5 minutes for model to load"
+echo "  5. ./healthcheck.sh"
+echo "  6. python3 perf-test.py http://<alb-dns>"
 echo ""
-echo "Estimated cost: ~\$$(echo "$DESIRED_CAPACITY * 5.67 * 24 * 30" | bc | cut -d. -f1)/month ($DESIRED_CAPACITY x $INSTANCE_TYPE, on-demand)"
+echo "SSH: ssh -i ~/.ssh/${KEY_NAME}.pem ubuntu@<instance-ip>"
+echo "Logs: ssh ... 'sudo cat /var/log/vllm-setup.log'"
+echo ""
+echo "Estimated cost: ~\$$(echo "$DESIRED_CAPACITY * 3.91 * 24" | bc | cut -d. -f1)/day ($DESIRED_CAPACITY x $INSTANCE_TYPE, on-demand)"
