@@ -169,9 +169,9 @@ resource "aws_launch_template" "vllm" {
   }
 
   block_device_mappings {
-    device_name = "/dev/xvda"
+    device_name = "/dev/sda1"
     ebs {
-      volume_size           = 200
+      volume_size           = 100
       volume_type           = "gp3"
       iops                  = 6000
       throughput            = 400
@@ -205,7 +205,7 @@ resource "aws_autoscaling_group" "vllm" {
   vpc_zone_identifier       = data.aws_subnets.default.ids
   target_group_arns         = [aws_lb_target_group.vllm.arn]
   health_check_type         = "ELB"
-  health_check_grace_period = 300
+  health_check_grace_period = 900
   default_cooldown          = 180
   termination_policies      = ["OldestInstance"]
 
@@ -246,9 +246,7 @@ resource "aws_autoscaling_policy" "target_tracking" {
       predefined_metric_type = "ALBRequestCountPerTarget"
       resource_label         = "${aws_lb.vllm.arn_suffix}/${aws_lb_target_group.vllm.arn_suffix}"
     }
-    target_value     = 50
-    scale_in_cooldown  = 300
-    scale_out_cooldown = 60
+    target_value = 50
   }
 }
 

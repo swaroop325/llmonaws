@@ -1,52 +1,89 @@
 #!/bin/bash
 set -euo pipefail
 
-# EC2 User Data script for vLLM on GPU instances (g5.4xlarge / g5.12xlarge)
-# Run as root on Amazon Linux 2023 or Ubuntu 22.04
+exec > /var/log/vllm-setup.log 2>&1
 
-echo "=== Installing NVIDIA drivers and Docker ==="
+echo "=== vLLM Setup Started at $(date) ==="
 
-# For Amazon Linux 2023
-if command -v dnf &>/dev/null; then
-    dnf install -y docker nvidia-driver nvidia-fabric-manager
-    systemctl enable --now docker
-    systemctl enable --now nvidia-fabricmanager
+# Move Docker/containerd to NVMe instance store for space
+# The DL AMI mounts ephemeral NVMe at /opt/dlami/nvme
+NVME_PATH="/opt/dlami/nvme"
+if [ -d "$NVME_PATH" ]; then
+    echo "Moving Docker and containerd to NVMe instance store..."
+    systemctl stop docker containerd
 
-    # Install nvidia-container-toolkit
-    curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo \
-        | tee /etc/yum.repos.d/nvidia-container-toolkit.repo
-    dnf install -y nvidia-container-toolkit
-    nvidia-ctk runtime configure --runtime=docker
-    systemctl restart docker
+    mkdir -p "$NVME_PATH/docker" "$NVME_PATH/containerd"
+    rsync -a /var/lib/docker/ "$NVME_PATH/docker/" || true
+    rsync -a /var/lib/containerd/ "$NVME_PATH/containerd/" || true
+    rm -rf /var/lib/docker /var/lib/containerd
+    ln -s "$NVME_PATH/docker" /var/lib/docker
+    ln -s "$NVME_PATH/containerd" /var/lib/containerd
+
+    systemctl start containerd docker
+    echo "Docker data moved to $NVME_PATH"
 fi
 
-# For Ubuntu 22.04
-if command -v apt-get &>/dev/null; then
-    apt-get update
-    apt-get install -y docker.io nvidia-driver-550 nvidia-utils-550
+echo "=== Setting up vLLM ==="
+mkdir -p /opt/vllm
 
-    # Install nvidia-container-toolkit
-    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-        | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-        | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-        | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-    apt-get update
-    apt-get install -y nvidia-container-toolkit
-    nvidia-ctk runtime configure --runtime=docker
-    systemctl restart docker
-fi
+cat > /opt/vllm/.env <<ENVEOF
+HF_TOKEN=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
+ENVEOF
 
-# Install docker-compose
-curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
-    -o /usr/local/bin/docker-compose
-chmod +x /usr/local/bin/docker-compose
+cat > /opt/vllm/docker-compose.yml <<'COMPOSEEOF'
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-cache:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=$${HF_TOKEN}
+      - VLLM_USAGE_SOURCE=production
+      - CUDA_VISIBLE_DEVICES=0,1,2,3
+    command:
+      - --model=Qwen/Qwen2.5-32B-Instruct-AWQ
+      - --quantization=awq
+      - --host=0.0.0.0
+      - --port=8000
+      - --tensor-parallel-size=4
+      - --gpu-memory-utilization=0.90
+      - --max-model-len=4096
+      - --max-num-seqs=256
+      - --max-num-batched-tokens=8192
+      - --enable-prefix-caching
+      - --served-model-name=qwen2.5-32b
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 300s
+    restart: unless-stopped
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    shm_size: '4gb'
+
+volumes:
+  model-cache:
+COMPOSEEOF
 
 echo "=== Pulling vLLM image ==="
 docker pull vllm/vllm-openai:latest
 
-echo "=== Starting vLLM service ==="
+echo "=== Starting vLLM ==="
 cd /opt/vllm
-docker-compose up -d
+docker compose --env-file .env up -d
 
-echo "=== Setup complete ==="
+echo "=== Setup complete at $(date) ==="
